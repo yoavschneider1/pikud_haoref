@@ -22,7 +22,6 @@ recent_alerts_cache = []
 
 
 def clean_text(text):
-    """ניקוי רווחים ותווים לבדיקה חסינה"""
     if not text: return ""
     return re.sub(r'\s+', ' ', text).strip()
 
@@ -31,7 +30,8 @@ def get_all_users():
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, areas, is_in_alert, last_msg_hash FROM users")
+        # הוספנו את last_alert_time לשאילתה
+        cursor.execute("SELECT chat_id, areas, is_in_alert, last_msg_hash, last_alert_time FROM users")
         rows = cursor.fetchall()
         conn.close()
         return rows
@@ -40,12 +40,12 @@ def get_all_users():
 
 
 def update_user_state(chat_id, is_in_alert, msg_hash):
-    """עדכון מצב המשתמש בבסיס הנתונים"""
+    """עדכון מצב המשתמש כולל זמן השליחה האחרון"""
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET is_in_alert = ?, last_msg_hash = ? WHERE chat_id = ?",
-                       (is_in_alert, msg_hash, chat_id))
+        cursor.execute("UPDATE users SET is_in_alert = ?, last_msg_hash = ?, last_alert_time = ? WHERE chat_id = ?",
+                       (is_in_alert, msg_hash, time.time(), chat_id))
         conn.commit()
         conn.close()
     except:
@@ -68,14 +68,13 @@ def process_alert(alert_data):
     title = clean_text(raw_title)
     desc = clean_text(raw_desc)
 
-    # סיווג התראות לפי הלוגיקה שביקשת
     is_entry = "ירי רקטות" in title or "כלי טיס" in title or "היכנסו" in desc
     is_release = "האירוע הסתיים" in title or "יכולים לצאת" in desc
     is_preliminary = "בדקות הקרובות" in title or "לשפר את המיקום" in desc
 
     users = get_all_users()
 
-    for chat_id, areas_str, is_in_alert, last_msg_hash in users:
+    for chat_id, areas_str, is_in_alert, last_msg_hash, last_alert_time in users:
         if not areas_str: continue
 
         user_areas = areas_str.split("|")
@@ -87,16 +86,20 @@ def process_alert(alert_data):
             msg_content = f"🚨 {raw_title} 🚨\n{raw_desc}\n\nיישובים:\n{cities_list}"
             current_hash = hashlib.md5(msg_content.encode()).hexdigest()
 
-            # 1. התראה מקדימה: שלח תמיד, אל תשנה סטטוס ממ"ד
+            current_time = time.time()
+            time_passed = current_time - (last_alert_time or 0)
+
+            # 1. התראה מקדימה
             if is_preliminary:
                 send_telegram(chat_id, msg_content)
 
-            # 2. כניסה למרחב מוגן: שלח תמיד (גם רצוף), עדכן סטטוס ל-1
+            # 2. כניסה למרחב מוגן: שלח אם ההודעה חדשה או אם עברו יותר מ-2 דקות
             elif is_entry:
-                send_telegram(chat_id, msg_content)
-                update_user_state(chat_id, 1, current_hash)
+                if current_hash != last_msg_hash or time_passed > 120:
+                    send_telegram(chat_id, msg_content)
+                    update_user_state(chat_id, 1, current_hash)
 
-            # 3. הודעת שחרור: שלח רק אם המשתמש בסטטוס 1 וזו לא הודעה כפולה רצופה
+            # 3. הודעת שחרור: שלח רק פעם אחת (כאשר המשתמש בסטטוס 1 וה-Hash שונה)
             elif is_release:
                 if is_in_alert == 1 and current_hash != last_msg_hash:
                     send_telegram(chat_id, msg_content)
@@ -115,7 +118,6 @@ def run_alert_listener():
                 if content:
                     data = json.loads(content)
                     key = f"{data.get('id')}_{data.get('title')}"
-
                     if key not in recent_alerts_cache:
                         process_alert(data)
                         recent_alerts_cache.append(key)

@@ -8,12 +8,10 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 DB_NAME = "alerts_bot.db"
 
-
 def init_db():
-    """אתחול מסד הנתונים ועדכון מבנה הטבלה עם עמודות הסטטוס החדשות"""
+    """אתחול מסד הנתונים ועדכון המבנה עם עמודות הסטטוס והזמן החדשות"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # יצירת הטבלה עם העמודות החדשות: is_in_alert ו-last_msg_hash
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users
         (
@@ -21,7 +19,8 @@ def init_db():
             full_name TEXT,
             areas TEXT,
             is_in_alert INTEGER DEFAULT 0,
-            last_msg_hash TEXT
+            last_msg_hash TEXT,
+            last_alert_time REAL DEFAULT 0
         )
     ''')
 
@@ -35,10 +34,11 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN is_in_alert INTEGER DEFAULT 0")
     if 'last_msg_hash' not in columns:
         cursor.execute("ALTER TABLE users ADD COLUMN last_msg_hash TEXT")
+    if 'last_alert_time' not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN last_alert_time REAL DEFAULT 0")
 
     conn.commit()
     conn.close()
-
 
 def add_or_update_user(chat_id, full_name, new_area):
     conn = sqlite3.connect(DB_NAME)
@@ -66,7 +66,6 @@ def add_or_update_user(chat_id, full_name, new_area):
     conn.commit()
     conn.close()
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["כל הארץ", "מחיקת הבחירות שלי"], ["/myareas"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -75,7 +74,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "הקלד שם יישוב להוספה למעקב. ניתן להוסיף כמה שרוצים.",
         reply_markup=reply_markup
     )
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
@@ -91,7 +89,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "מחיקת הבחירות שלי":
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET areas = NULL, is_in_alert = 0, last_msg_hash = NULL WHERE chat_id = ?",
+        cursor.execute("UPDATE users SET areas = NULL, is_in_alert = 0, last_msg_hash = NULL, last_alert_time = 0 WHERE chat_id = ?",
                        (chat_id,))
         conn.commit()
         conn.close()
@@ -102,7 +100,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     display = text if text != "כל הארץ" else "כל הארץ 🇮🇱"
     await update.message.reply_text(f"נוסף למעקב: {display} ✅")
 
-
 async def my_areas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -112,7 +109,6 @@ async def my_areas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"אתה עוקב אחרי: {res[0].replace('|', ', ')}" if res and res[0] else "אתה לא רשום לאף אזור."
     await update.message.reply_text(msg)
 
-
 def run_bot():
     init_db()
     app = ApplicationBuilder().token(TOKEN).read_timeout(30).connect_timeout(30).build()
@@ -121,7 +117,6 @@ def run_bot():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("🤖 Bot is running...")
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     run_bot()
