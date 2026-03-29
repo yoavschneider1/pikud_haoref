@@ -90,7 +90,7 @@ def process_alert(alert_data):
             time_passed = current_time - (last_alert_time or 0)
 
             # 1. התראה מקדימה
-            if is_preliminary:
+            if is_preliminary and current_hash != last_msg_hash:
                 send_telegram(chat_id, msg_content)
 
             # 2. כניסה למרחב מוגן: שלח אם ההודעה חדשה או אם עברו יותר מ-2 דקות
