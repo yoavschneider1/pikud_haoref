@@ -34,8 +34,6 @@ def get_proxies_config():
         return None
 
 
-# הגדרה ראשונית כ-None, תתעדכן בריצה
-PROXIES = None
 headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.oref.org.il/", "X-Requested-With": "XMLHttpRequest"}
 recent_alerts_cache = []
 
@@ -109,33 +107,53 @@ def process_alert(alert_data):
 
 
 def run_alert_listener():
-    global recent_alerts_cache, PROXIES
-    # בדיקת המיקום מתבצעת כאן כדי שהלוג יופיע מיד
-    PROXIES = get_proxies_config()
+    global recent_alerts_cache
+    proxies = get_proxies_config()
 
     logging.info("Alert listener is starting...")
     session = requests.Session()
-    session.proxies = PROXIES
+    session.proxies = proxies
     session.headers.update(headers)
 
     last_status = None
     last_heartbeat = time.time()
 
+    # מונים לדיווח שעתי
+    success_count = 0
+    total_checks = 0
+
     while True:
         try:
             now_israel = datetime.now(ISRAEL_TZ)
             timestamp = now_israel.strftime("%H:%M:%S")
-
-            # דופק למערכת פעם בשעה
-            if time.time() - last_heartbeat > 3600:
-                logging.info(f"💓 Heartbeat [{timestamp}]: Alert listener is still running fine.")
-                last_heartbeat = time.time()
+            total_checks += 1
 
             res = session.get(URL, timeout=20)
 
-            # הדפסת סטטוס קבועה למסך לפי שעון ישראל
-            print(f"[{timestamp}] Request to Pikud Haoref - Status: {res.status_code}")
+            # בדיקת סטטוס והתראה מיידית אם אינו 200
+            if res.status_code == 200:
+                success_count += 1
+            else:
+                logging.error(f"⚠️ Non-200 Status Detected: {res.status_code} at {timestamp}")
 
+            # הדפסה קבועה ל-Console
+            print(f"[{timestamp}] Request to Pikud Haoref - Status: {res.status_code}", flush=True)
+
+            # דופק למערכת (Heartbeat) פעם בשעה עם סיכום
+            if time.time() - last_heartbeat > 3600:
+                if success_count == total_checks:
+                    logging.info(
+                        f"💓 Heartbeat [{timestamp}]: OK - All checks were 200 ({success_count}/{total_checks})")
+                else:
+                    logging.warning(
+                        f"💓 Heartbeat [{timestamp}]: ISSUES - Only {success_count}/{total_checks} checks were 200.")
+
+                # איפוס מונים לשעה הבאה
+                last_heartbeat = time.time()
+                success_count = 0
+                total_checks = 0
+
+            # תיעוד שינויי סטטוס בלוג
             if res.status_code != last_status:
                 logging.info(f"Pikud Haoref Status Changed: {res.status_code}")
                 last_status = res.status_code
