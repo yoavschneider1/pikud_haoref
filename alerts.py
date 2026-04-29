@@ -5,51 +5,38 @@ import json
 import os
 import re
 import hashlib
+import logging
+from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 DB_NAME = "alerts_bot.db"
 URL = "https://www.oref.org.il/warningMessages/alert/alerts.json"
+ISRAEL_TZ = pytz.timezone('Asia/Jerusalem')
 
 
 def get_proxies_config():
-    """
-    בודק אם הסקריפט רץ מחוץ לישראל ומגדיר את הרסברי כפרוקסי במידת הצורך.
-    """
     try:
-        # בדיקת מיקום המחשב שמריץ את הבוט
         res = requests.get("http://ip-api.com/json/", timeout=5)
         data = res.json()
         country = data.get("country")
-
         if country == "Israel":
-            print(f"🇮🇱 [STATUS] Location: Israel. Mode: Direct Connection.")
+            logging.info("Location: Israel. Mode: Direct Connection.")
             return None
         else:
-            # ה-IP של הרסברי פאי שלך
             pi_ip = "127.0.0.1"
-            print(f"🌍 [STATUS] Location: {country}. Mode: Using Proxy ({pi_ip}).")
-            return {
-                "http": f"http://{pi_ip}:8888",
-                "https": f"http://{pi_ip}:8888",
-            }
+            logging.info(f"Location: {country}. Mode: Using Proxy ({pi_ip}).")
+            return {"http": f"http://{pi_ip}:8888", "https": f"http://{pi_ip}:8888"}
     except Exception as e:
-        print(f"⚠️ [ERROR] Could not check location: {e}. Defaulting to no proxy.")
+        logging.warning(f"Could not check location: {e}. Defaulting to no proxy.")
         return None
 
 
-# הגדרת הפרוקסי פעם אחת בעת עליית הסקריפט
-PROXIES = get_proxies_config()
-
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Referer": "https://www.oref.org.il/",
-    "X-Requested-With": "XMLHttpRequest",
-    "Accept": "*/*",
-    "Connection": "keep-alive"
-}
-
+# הגדרה ראשונית כ-None, תתעדכן בריצה
+PROXIES = None
+headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.oref.org.il/", "X-Requested-With": "XMLHttpRequest"}
 recent_alerts_cache = []
 
 
@@ -66,7 +53,8 @@ def get_all_users():
         rows = cursor.fetchall()
         conn.close()
         return rows
-    except:
+    except Exception as e:
+        logging.error(f"DB Error (get_all_users): {e}")
         return []
 
 
@@ -78,74 +66,79 @@ def update_user_state(chat_id, is_in_alert, msg_hash):
                        (is_in_alert, msg_hash, time.time(), chat_id))
         conn.commit()
         conn.close()
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"DB Error (update_user_state): {e}")
 
 
 def send_telegram(chat_id, msg):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": chat_id, "text": msg}, timeout=10)
+        logging.info(f"Telegram message sent to {chat_id}")
     except Exception as e:
-        print(f"❌ [ERROR] Failed to send Telegram message: {e}")
+        logging.error(f"Failed to send Telegram message: {e}")
 
 
 def process_alert(alert_data):
     raw_title = alert_data.get("title", "")
-    raw_desc = alert_data.get("desc", "")
     alert_cities = alert_data.get("data", [])
-
     title = clean_text(raw_title)
-    desc = clean_text(raw_desc)
+    desc = clean_text(alert_data.get("desc", ""))
 
     is_entry = any(word in title for word in ["ירי רקטות", "כלי טיס"]) or "היכנסו" in desc
     is_release = "האירוע הסתיים" in title or "יכולים לצאת" in desc
-    is_preliminary = any(word in title for word in ["בדקות הקרובות", "לשפר את המיקום"])
 
     users = get_all_users()
-
     for chat_id, areas_str, is_in_alert, last_msg_hash, last_alert_time in users:
         if not areas_str: continue
-
         user_areas = areas_str.split("|")
         matched = [city for city in alert_cities if any(a.strip() in city for a in user_areas)] or \
                   (alert_cities if "כל הארץ" in user_areas else [])
 
         if matched:
             cities_list = "\n".join(sorted(set(matched)))
-            msg_content = f"🚨 {raw_title} 🚨\n{raw_desc}\n\nיישובים:\n{cities_list}"
+            msg_content = f"🚨 {raw_title} 🚨\n{desc}\n\nיישובים:\n{cities_list}"
             current_hash = hashlib.md5(msg_content.encode()).hexdigest()
 
-            current_time = time.time()
-            time_passed = current_time - (last_alert_time or 0)
-
-            if is_preliminary and current_hash != last_msg_hash:
+            if is_entry and (current_hash != last_msg_hash or (time.time() - last_alert_time) > 120):
                 send_telegram(chat_id, msg_content)
-            elif is_entry:
-                if current_hash != last_msg_hash or time_passed > 120:
-                    send_telegram(chat_id, msg_content)
-                    update_user_state(chat_id, 1, current_hash)
-            elif is_release:
-                if is_in_alert == 1 and current_hash != last_msg_hash:
-                    send_telegram(chat_id, msg_content)
-                    update_user_state(chat_id, 0, current_hash)
+                update_user_state(chat_id, 1, current_hash)
+            elif is_release and is_in_alert == 1 and current_hash != last_msg_hash:
+                send_telegram(chat_id, msg_content)
+                update_user_state(chat_id, 0, current_hash)
 
 
 def run_alert_listener():
-    global recent_alerts_cache
-    print("🚨 Alert listener is starting...")
+    global recent_alerts_cache, PROXIES
+    # בדיקת המיקום מתבצעת כאן כדי שהלוג יופיע מיד
+    PROXIES = get_proxies_config()
 
+    logging.info("Alert listener is starting...")
     session = requests.Session()
     session.proxies = PROXIES
     session.headers.update(headers)
 
+    last_status = None
+    last_heartbeat = time.time()
+
     while True:
         try:
+            now_israel = datetime.now(ISRAEL_TZ)
+            timestamp = now_israel.strftime("%H:%M:%S")
+
+            # דופק למערכת פעם בשעה
+            if time.time() - last_heartbeat > 3600:
+                logging.info(f"💓 Heartbeat [{timestamp}]: Alert listener is still running fine.")
+                last_heartbeat = time.time()
+
             res = session.get(URL, timeout=20)
 
-            # הדפסת הסטטוס של הבקשה הנוכחית
-            timestamp = time.strftime("%H:%M:%S")
+            # הדפסת סטטוס קבועה למסך לפי שעון ישראל
             print(f"[{timestamp}] Request to Pikud Haoref - Status: {res.status_code}")
+
+            if res.status_code != last_status:
+                logging.info(f"Pikud Haoref Status Changed: {res.status_code}")
+                last_status = res.status_code
 
             if res.status_code == 200:
                 content = res.content.decode("utf-8-sig").strip()
@@ -153,23 +146,12 @@ def run_alert_listener():
                     data = json.loads(content)
                     key = f"{data.get('id')}_{data.get('title')}"
                     if key not in recent_alerts_cache:
-                        print(f"✨ [NEW ALERT] {data.get('title')}")
+                        logging.info(f"✨ NEW ALERT: {data.get('title')}")
                         process_alert(data)
                         recent_alerts_cache.append(key)
                         if len(recent_alerts_cache) > 20: recent_alerts_cache.pop(0)
 
-            elif res.status_code == 403:
-                print("🚫 [STATUS] 403 Forbidden - Access denied by server.")
-
             time.sleep(2)
-
-        except requests.exceptions.Timeout:
-            print("⏳ [TIMEOUT] No response from server. Retrying...")
-            time.sleep(5)
         except Exception as e:
-            print(f"⚠️ [LOOP ERROR] {e}")
+            logging.error(f"Loop Error: {e}")
             time.sleep(5)
-
-
-if __name__ == "__main__":
-    run_alert_listener()

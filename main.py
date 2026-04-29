@@ -1,24 +1,85 @@
 import multiprocessing
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+import os
+from datetime import datetime
+import pytz
 from bot import run_bot
 from alerts import run_alert_listener
 
+# הגדרת אזור זמן ישראל
+ISRAEL_TZ = pytz.timezone('Asia/Jerusalem')
+
+
+def israel_timezone_converter(*args):
+    return datetime.now(ISRAEL_TZ).timetuple()
+
+
+def setup_logging():
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    log_file = os.path.join(base_path, 'app.log')
+
+    # הגדרת הלוגר להשתמש בזמן ישראל
+    logging.Formatter.converter = israel_timezone_converter
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s] - %(message)s')
+
+    # הגדרת כתיבה לקובץ - delay=False מבטיח פתיחה מיידית
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding='utf-8',
+        delay=False
+    )
+    file_handler.setFormatter(log_formatter)
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+
+    # הוספת הדפסה למסך
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_formatter)
+    logger.addHandler(console_handler)
+
+    # --- ניקוי לוגים "מרעישים" ---
+    # משתיק הודעות HTTP של ספריות חיצוניות (מציג רק אזהרות ושגיאות)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # וידוא כתיבה מיידית לדיסק
+    file_handler.flush()
+
+
 def start_bot():
+    # אתחול לוגר בתוך התהליך (קריטי ל-Windows)
+    setup_logging()
     try:
+        logging.info("Starting Telegram Bot process...")
         run_bot()
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        logging.error(f"Bot Process Crashed: {e}", exc_info=True)
+
 
 def start_alerts():
+    # אתחול לוגר בתוך התהליך (קריטי ל-Windows)
+    setup_logging()
     try:
+        logging.info("Starting Alert Listener process...")
         run_alert_listener()
-    except KeyboardInterrupt:
-        pass
+    except Exception as e:
+        logging.error(f"Alerts Process Crashed: {e}", exc_info=True)
+
 
 if __name__ == "__main__":
-    print("🚀 Starting Red Alert System...")
+    setup_logging()
+    logging.info("🚀 Starting Red Alert System...")
 
-    bot_process = multiprocessing.Process(target=start_bot)
-    alerts_process = multiprocessing.Process(target=start_alerts)
+    # שימוש ב-daemon=True לסגירה נקייה
+    bot_process = multiprocessing.Process(target=start_bot, daemon=True)
+    alerts_process = multiprocessing.Process(target=start_alerts, daemon=True)
 
     bot_process.start()
     alerts_process.start()
@@ -27,7 +88,6 @@ if __name__ == "__main__":
         bot_process.join()
         alerts_process.join()
     except KeyboardInterrupt:
-        print("\n🛑 Stopping system...")
+        logging.info("🛑 Stopping system...")
         bot_process.terminate()
         alerts_process.terminate()
-        print("✅ System stopped.")

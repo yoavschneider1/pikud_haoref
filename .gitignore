@@ -6,6 +6,8 @@ venv/
 
 *.db
 *.sqlite3
+*.log
 
 .vscode/
 .idea/
+
