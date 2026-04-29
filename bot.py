@@ -83,7 +83,6 @@ async def my_areas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def run_bot():
     init_db()
-    # לולאת Retry לניהול ניתוקי אינטרנט ב-VPS
     while True:
         try:
             app = ApplicationBuilder().token(TOKEN).build()

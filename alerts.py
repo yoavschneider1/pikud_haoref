@@ -47,7 +47,8 @@ def get_all_users():
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("SELECT chat_id, areas, is_in_alert, last_msg_hash, last_alert_time FROM users")
+        # שינוי: הוספת full_name לשאילתה
+        cursor.execute("SELECT chat_id, areas, is_in_alert, last_msg_hash, last_alert_time, full_name FROM users")
         rows = cursor.fetchall()
         conn.close()
         return rows
@@ -68,13 +69,14 @@ def update_user_state(chat_id, is_in_alert, msg_hash):
         logging.error(f"DB Error (update_user_state): {e}")
 
 
-def send_telegram(chat_id, msg):
+def send_telegram(chat_id, msg, full_name="Unknown"):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": chat_id, "text": msg}, timeout=10)
-        logging.info(f"Telegram message sent to {chat_id}")
+        # שינוי: הוספת שם המשתמש ללוג בסוגריים
+        logging.info(f"Telegram message sent to {chat_id} ({full_name})")
     except Exception as e:
-        logging.error(f"Failed to send Telegram message: {e}")
+        logging.error(f"Failed to send Telegram message to {chat_id}: {e}")
 
 
 def process_alert(alert_data):
@@ -87,7 +89,8 @@ def process_alert(alert_data):
     is_release = "האירוע הסתיים" in title or "יכולים לצאת" in desc
 
     users = get_all_users()
-    for chat_id, areas_str, is_in_alert, last_msg_hash, last_alert_time in users:
+    # שינוי: פירוק ה-tuple כולל full_name
+    for chat_id, areas_str, is_in_alert, last_msg_hash, last_alert_time, full_name in users:
         if not areas_str: continue
         user_areas = areas_str.split("|")
         matched = [city for city in alert_cities if any(a.strip() in city for a in user_areas)] or \
@@ -99,10 +102,10 @@ def process_alert(alert_data):
             current_hash = hashlib.md5(msg_content.encode()).hexdigest()
 
             if is_entry and (current_hash != last_msg_hash or (time.time() - last_alert_time) > 120):
-                send_telegram(chat_id, msg_content)
+                send_telegram(chat_id, msg_content, full_name) # שינוי: העברת השם
                 update_user_state(chat_id, 1, current_hash)
             elif is_release and is_in_alert == 1 and current_hash != last_msg_hash:
-                send_telegram(chat_id, msg_content)
+                send_telegram(chat_id, msg_content, full_name) # שינוי: העברת השם
                 update_user_state(chat_id, 0, current_hash)
 
 
@@ -118,7 +121,6 @@ def run_alert_listener():
     last_status = None
     last_heartbeat = time.time()
 
-    # מונים לדיווח שעתי
     success_count = 0
     total_checks = 0
 
@@ -130,16 +132,13 @@ def run_alert_listener():
 
             res = session.get(URL, timeout=20)
 
-            # בדיקת סטטוס והתראה מיידית אם אינו 200
             if res.status_code == 200:
                 success_count += 1
             else:
                 logging.error(f"⚠️ Non-200 Status Detected: {res.status_code} at {timestamp}")
 
-            # הדפסה קבועה ל-Console
             print(f"[{timestamp}] Request to Pikud Haoref - Status: {res.status_code}", flush=True)
 
-            # דופק למערכת (Heartbeat) פעם בשעה עם סיכום
             if time.time() - last_heartbeat > 3600:
                 if success_count == total_checks:
                     logging.info(
@@ -148,12 +147,10 @@ def run_alert_listener():
                     logging.warning(
                         f"💓 Heartbeat [{timestamp}]: ISSUES - Only {success_count}/{total_checks} checks were 200.")
 
-                # איפוס מונים לשעה הבאה
                 last_heartbeat = time.time()
                 success_count = 0
                 total_checks = 0
 
-            # תיעוד שינויי סטטוס בלוג
             if res.status_code != last_status:
                 logging.info(f"Pikud Haoref Status Changed: {res.status_code}")
                 last_status = res.status_code
