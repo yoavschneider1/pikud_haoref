@@ -3,9 +3,10 @@ import logging
 from logging.handlers import RotatingFileHandler
 import sys
 import os
+import time
 from datetime import datetime
 import pytz
-from bot import run_bot
+from bot import run_bot, init_db
 from alerts import run_alert_listener
 
 # הגדרת אזור זמן ישראל
@@ -20,7 +21,6 @@ def setup_logging():
     base_path = os.path.dirname(os.path.abspath(__file__))
     log_file = os.path.join(base_path, 'app.log')
 
-    # הגדרת הלוגר להשתמש בזמן ישראל
     logging.Formatter.converter = israel_timezone_converter
     log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s] - %(message)s')
 
@@ -41,13 +41,10 @@ def setup_logging():
     console_handler.setFormatter(log_formatter)
     logger.addHandler(console_handler)
 
-    # --- ניקוי לוגים "מרעישים" ---
-    # משתיק הודעות HTTP של ספריות חיצוניות (מציג רק אזהרות ושגיאות)
+    # השתקת ספריות חיצוניות
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-    file_handler.flush()
 
 
 def start_bot():
@@ -71,6 +68,9 @@ def start_alerts():
 if __name__ == "__main__":
     setup_logging()
     logging.info("🚀 Starting Red Alert System...")
+
+    # אתחול DB פעם אחת לפני שמתחילים
+    init_db()
 
     bot_process = multiprocessing.Process(target=start_bot, daemon=True)
     alerts_process = multiprocessing.Process(target=start_alerts, daemon=True)
